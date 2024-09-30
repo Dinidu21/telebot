@@ -1,14 +1,13 @@
-import logging
-import os
-import re
 from dotenv import load_dotenv
-import pandas as pd
-from datetime import datetime
-from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
+import re
 import asyncio
-import httpx
+import logging
+import os
+import aiofiles
+from datetime import datetime
+from telegram import Update
 
 # Configure logging
 logging.basicConfig(
@@ -17,144 +16,227 @@ logging.basicConfig(
 )
 
 # Constants for paths
-CURRENT_DIR = "D:/Tools/TeleBot"
-COOKIES_FILE_PATH = 'cookies.txt'
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIES_FILE_PATH = os.path.join(CURRENT_DIR, 'cookies.txt')
 
-# Function to log user activity
-def log_user_activity(username, youtube_link, success=True):
-    """
-    Logs user activity to a CSV file.
 
-    Args:
-        username (str): The username of the user.
-        youtube_link (str): The YouTube link provided by the user.
-        success (bool): Whether the download was successful or not.
-    """
+def validate_url(url: str) -> bool:
+    """Validate YouTube URL."""
+    youtube_regex = (
+        r'^(https?:\/\/)?(www\.)?'
+        r'(youtube|youtu|youtube-nocookie)\.(com|be)\/'
+        r'(watch\?v=|embed\/|v\/|.+\?v=)?([^&=%\?]{11})'
+        r'(&.*)?$'
+    )
+    clean_url = url.split('?')[0]  # Strip query parameters
+    return re.fullmatch(youtube_regex, clean_url) is not None
+
+
+async def log_user_activity(username: str, youtube_link: str, success: bool = True):
+    """Logs user activity to a CSV file."""
+    if not (username and youtube_link):
+        logging.error("Invalid parameters for logging user activity.")
+        return
+
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     status = 'Success' if success else 'Failure'
-    data = {
-        'Username': [username],
-        'YouTube Link': [youtube_link],
-        'Timestamp': [timestamp],
-        'Status': [status]
-    }
     log_csv_path = os.path.join(CURRENT_DIR, "downloads_log.csv")
+    header = "Username,YouTube Link,Timestamp,Status\n"
+    row = f"{username},{youtube_link},{timestamp},{status}\n"
 
     try:
-        df = pd.DataFrame(data)
-        df.to_csv(log_csv_path, mode='a', index=False, header=not os.path.exists(log_csv_path))
-        logging.info("User activity logged successfully.")
+        async with aiofiles.open(log_csv_path, mode='a') as f:
+            if not os.path.exists(log_csv_path):
+                await f.write(header)
+            await f.write(row)
+        logging.info(f"User activity logged. Username: {username}, Link: {youtube_link}, Status: {status}")
     except Exception as e:
         logging.error(f"Error writing to log file: {e}")
 
-# Function to download audio
-async def download_audio(youtube_url, update):
-    """
-    Downloads the audio from the specified YouTube URL.
 
-    Args:
-        youtube_url (str): The URL of the YouTube video.
-        update (Update): The update object containing the message.
+async def update_progress(d: dict, update: Update):
+    """Updates the progress of the download."""
+    if not isinstance(d, dict) or 'status' not in d:
+        logging.error("Invalid progress data received.")
+        return
 
-    Returns:
-        str: The path to the downloaded audio file.
-    """
-    temp_audio_file_path = os.path.join(CURRENT_DIR, "audio_temp.m4a")
-    final_audio_file_path = os.path.join(CURRENT_DIR, "audio.mp3")
+    if d['status'] == 'downloading' and d.get('total_bytes'):
+        downloaded_bytes = d.get('downloaded_bytes', 0)
+        total_bytes = d.get('total_bytes')
+
+        if total_bytes == 0:
+            logging.error("Total bytes is zero, cannot calculate progress.")
+            return
+
+        percent = downloaded_bytes / total_bytes * 100
+        logging.info(f"Download progress: {percent:.2f}%")
+
+        if update.message:
+            try:
+                await update.message.reply_text(f"Download progress: {percent:.2f}%")
+            except Exception as e:
+                logging.error(f"Error sending progress message: {str(e)}")
+
+
+async def download_audio(youtube_url: str, update: Update, cookies_file_path: str) -> str:
+    """Downloads the audio from the specified YouTube URL."""
+
+    # Generate a unique filename based on current time without .mp3 extension initially
+    final_audio_file_path = os.path.join(CURRENT_DIR, f"downloaded_audio_{int(asyncio.get_event_loop().time())}")
 
     async def progress_hook(d):
         await update_progress(d, update)
 
+    # Validate the YouTube URL
+    if not validate_url(youtube_url):
+        if update.message:
+            await update.message.reply_text("Error: Invalid YouTube URL.")
+        return None
+
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/best',
+        'format': 'bestaudio/best',
         'extractaudio': True,
         'audioformat': 'mp3',
-        'outtmpl': temp_audio_file_path,
+        'outtmpl': final_audio_file_path,
         'noplaylist': True,
-        'cookiefile': COOKIES_FILE_PATH,
+        'cookiefile': cookies_file_path,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '320',
         }],
         'progress_hooks': [progress_hook],
-        'keepvideo': True  # Keep the original file
     }
 
     logging.info(f"Starting download for: {youtube_url}")
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        if update.message:
             await update.message.reply_text("Download started. Please wait...")
-            ydl.download([youtube_url])
-            logging.info("Audio download complete.")
 
-        if os.path.exists(temp_audio_file_path):
-            if os.path.exists(final_audio_file_path):
-                os.remove(final_audio_file_path)
-            os.rename(temp_audio_file_path, final_audio_file_path)
-            logging.info(f"Renamed temporary file to {final_audio_file_path}.")
+        # Use asyncio to run the download
+        await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([youtube_url]))
+
+        # Check if the file was created successfully (with .mp3 extension)
+        final_audio_file_path += '.mp3'  # Append .mp3 extension after processing
+
+        if os.path.exists(final_audio_file_path):
+            logging.info(f"Audio downloaded successfully to: {final_audio_file_path}")
             return final_audio_file_path
         else:
-            logging.error("Temporary audio file not found.")
+            logging.error("Audio file not found after download.")
+            if update.message:
+                await update.message.reply_text("Error: Audio file not found after download.")
             return None
+
     except Exception as e:
         logging.error(f"An error occurred during download: {str(e)}")
-        await update.message.reply_text("Error: Unable to download the audio.")
+        if update.message:
+            await update.message.reply_text("Error: Unable to download the audio.")
         return None
 
-async def update_progress(d, update):
-    """
-    Updates the progress of the download.
 
-    Args:
-        d (dict): The download progress dictionary.
-        update (Update): The update object containing the message.
-    """
-    if d['status'] == 'downloading':
-        percent = d['downloaded_bytes'] / d['total_bytes'] * 100
-        await update.message.reply_text(f"Download progress: {percent:.2f}%")
-
-# Function to handle incoming messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handles incoming messages from users.
+    """Handles incoming messages from users."""
 
-    Args:
-        update (Update): The update object containing the message.
-        context (ContextTypes.DEFAULT_TYPE): The context object.
-    """
-    youtube_link = update.message.text
-    username = update.message.from_user.username or update .message.from_user.first_name
+    try:
+        youtube_link = update.message.text.strip()
+        username = update.message.from_user.username or update.message.from_user.first_name
 
-    # Validate YouTube link
-    if not re.match(r'^(https?:\/\/)?(www\.youtube\.com|youtu\.?be)\/.+$', youtube_link):
-        await update.message.reply_text("Error: Please send a valid YouTube link.")
-        return
+        if not validate_url(youtube_link):
+            await update.message.reply_text("Error: Please send a valid YouTube link.")
+            await log_user_activity(username, youtube_link, success=False)
+            return
 
-    # Download audio
-    audio_file_path = await download_audio(youtube_link, update)
-    if audio_file_path:
-        await update.message.reply_text("Download complete. Sending audio file...")
-        await context.bot.send_audio(chat_id=update.effective_chat.id, audio=open(audio_file_path, 'rb'))
-        log_user_activity(username, youtube_link)
-    else:
-        log_user_activity(username, youtube_link, success=False)
+        audio_file_path = await download_audio(youtube_link, update, COOKIES_FILE_PATH)
 
-# Main function
+        if audio_file_path and os.path.isfile(audio_file_path):
+            await update.message.reply_text("Download complete. Sending audio file...")
+
+            try:
+                async with aiofiles.open(audio_file_path, 'rb') as audio_file:
+                    await context.bot.send_audio(
+                        chat_id=update.effective_chat.id,
+                        audio=await audio_file.read(),
+                        filename=os.path.basename(audio_file_path)
+                    )
+                await log_user_activity(username, youtube_link)
+
+            except Exception as e:
+                logging.error(f"Error sending audio file: {str(e)}")
+                await update.message.reply_text("Error: Failed to send the audio file. Please try again later.")
+
+        else:
+            await update.message.reply_text(
+                "Error: Failed to download the audio. The video might be unavailable or restricted."
+            )
+            await log_user_activity(username, youtube_link, success=False)
+
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {str(e)}")
+        await update.message.reply_text("Error: An unexpected error occurred. Please try again later.")
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /start command."""
+
+    try:
+        username = update.message.from_user.username or update.message.from_user.first_name
+        logging.info(f"/start command initiated by {username}")
+
+        welcome_message = (
+            "🎉 Welcome to the Audio Downloader Bot! 🎶\n"
+            "Simply send me a YouTube link, and I'll help you download the audio in no time!\n\n"
+            "💡 Here’s how to get started:\n"
+            "1. Copy a YouTube link.\n"
+            "2. Paste it here.\n"
+            "3. Wait a moment for your audio file to be ready!\n\n"
+            "If you have any questions or need assistance, feel free to ask!"
+        )
+
+        await update.message.reply_text(welcome_message)
+
+    except Exception as e:
+        logging.error(f"Error in /start command: {str(e)} | User: {username}")
+        await update.message.reply_text(
+            "❌ Oops! Something went wrong while processing your request. Please try again later.")
+
+
 def main():
-    # Load environment variables
+    """Main function to run the Telegram bot."""
+
     load_dotenv()
 
-    # Create the application
-    application = ApplicationBuilder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-    # Add handlers
-    application.add_handler(CommandHandler('start', lambda update, context: update.message.reply_text("Welcome! Send a YouTube link to download the audio.")))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    if not TELEGRAM_BOT_TOKEN:
+        logging.error("Telegram bot token not found in environment variables.")
+        raise ValueError("TELEGRAM_BOT_TOKEN must be set in the environment variables.")
 
-    # Run the application
-    application.run_polling()
+    try:
+        application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+        logging.info("Telegram bot application created successfully.")
+
+        # Adding command and message handlers
+        application.add_handler(CommandHandler('start', start_command))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+        logging.info("Command and message handlers added successfully.")
+
+        logging.info("Starting polling for updates...")
+
+        application.run_polling()
+
+    except Exception as e:
+        logging.error(f"Error starting the bot: {str(e)}")
+        raise  # Optionally re-raise the exception to signal failure
+
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(level=logging.INFO)  # Set up logging before calling main
+
+    try:
+        main()
+    except Exception as e:
+        logging.critical(f"Bot crashed: {str(e)}")

@@ -81,13 +81,11 @@ async def update_progress(d: dict, update: Update):
 async def download_audio(youtube_url: str, update: Update, cookies_file_path: str) -> str:
     """Downloads the audio from the specified YouTube URL."""
 
-    # Generate a unique filename based on current time without .mp3 extension initially
     final_audio_file_path = os.path.join(CURRENT_DIR, f"downloaded_audio_{int(asyncio.get_event_loop().time())}")
 
     async def progress_hook(d):
         await update_progress(d, update)
 
-    # Validate the YouTube URL
     if not validate_url(youtube_url):
         if update.message:
             await update.message.reply_text("Error: Invalid YouTube URL.")
@@ -114,11 +112,9 @@ async def download_audio(youtube_url: str, update: Update, cookies_file_path: st
         if update.message:
             await update.message.reply_text("Download started. Please wait...")
 
-        # Use asyncio to run the download
         await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([youtube_url]))
 
-        # Check if the file was created successfully (with .mp3 extension)
-        final_audio_file_path += '.mp3'  # Append .mp3 extension after processing
+        final_audio_file_path += '.mp3'
 
         if os.path.exists(final_audio_file_path):
             logging.info(f"Audio downloaded successfully to: {final_audio_file_path}")
@@ -155,15 +151,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             try:
                 async with aiofiles.open(audio_file_path, 'rb') as audio_file:
-                    await context.bot.send_audio(
-                        chat_id=update.effective_chat.id,
-                        audio=await audio_file.read(),
-                        filename=os.path.basename(audio_file_path)
-                    )
+                    # Retry sending audio in case of timeout
+                    for attempt in range(3):  # Retry up to 3 times
+                        try:
+                            await context.bot.send_audio(
+                                chat_id=update.effective_chat.id,
+                                audio=await audio_file.read(),
+                                filename=os.path.basename(audio_file_path)
+                            )
+                            break  # Break on successful send
+                        except Exception as e:
+                            logging.error(f"Attempt {attempt + 1} failed to send audio file: {str(e)}")
+                            if attempt == 2:  # Last attempt failed
+                                await update.message.reply_text(
+                                    "Error: Failed to send the audio file. Please try again later.")
+
                 await log_user_activity(username, youtube_link)
 
             except Exception as e:
-                logging.error(f"Error sending audio file: {str(e)}")
+                logging.error(f"Error opening audio file for sending: {str(e)}")
                 await update.message.reply_text("Error: Failed to send the audio file. Please try again later.")
 
         else:
@@ -199,7 +205,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Error in /start command: {str(e)} | User: {username}")
         await update.message.reply_text(
-            "❌ Oops! Something went wrong while processing your request. Please try again later.")
+            "❌ Oops! Something went wrong while processing your request. Please try again later."
+        )
 
 
 def main():

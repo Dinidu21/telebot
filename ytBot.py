@@ -79,9 +79,9 @@ async def update_progress(d: dict, update: Update):
 
 
 async def download_audio(youtube_url: str, update: Update, cookies_file_path: str) -> str:
-    """Downloads the audio from the specified YouTube URL."""
-
-    final_audio_file_path = os.path.join(CURRENT_DIR, f"downloaded_audio_{int(asyncio.get_event_loop().time())}")
+    """Downloads the audio from the specified YouTube URL and names the file based on the video's title."""
+    # Temporary variable to store the final audio file path
+    final_audio_file_path = os.path.join(CURRENT_DIR, "downloaded_audio")
 
     async def progress_hook(d):
         await update_progress(d, update)
@@ -91,19 +91,20 @@ async def download_audio(youtube_url: str, update: Update, cookies_file_path: st
             await update.message.reply_text("Error: Invalid YouTube URL.")
         return None
 
+    # Set up options for yt-dlp
     ydl_opts = {
         'format': 'bestaudio/best',
         'extractaudio': True,
         'audioformat': 'mp3',
-        'outtmpl': final_audio_file_path,
+        'outtmpl': os.path.join(CURRENT_DIR, '%(title)s.%(ext)s'),  # Template for output file names
         'noplaylist': True,
         'cookiefile': cookies_file_path,
+        'progress_hooks': [progress_hook],
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '320',
         }],
-        'progress_hooks': [progress_hook],
     }
 
     logging.info(f"Starting download for: {youtube_url}")
@@ -112,9 +113,14 @@ async def download_audio(youtube_url: str, update: Update, cookies_file_path: st
         if update.message:
             await update.message.reply_text("Download started. Please wait...")
 
-        await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([youtube_url]))
+        # Use yt-dlp to extract video info first
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(youtube_url, download=False)  # Extract info without downloading
+            title = info_dict.get('title', 'unknown_title')  # Get the title of the video
+            final_audio_file_path = os.path.join(CURRENT_DIR, f"{title}.mp3")  # Set the full output path
 
-        final_audio_file_path += '.mp3'
+            # Download the audio
+            await asyncio.to_thread(lambda: ydl.download([youtube_url]))
 
         if os.path.exists(final_audio_file_path):
             logging.info(f"Audio downloaded successfully to: {final_audio_file_path}")
@@ -134,7 +140,6 @@ async def download_audio(youtube_url: str, update: Update, cookies_file_path: st
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles incoming messages from users."""
-
     try:
         youtube_link = update.message.text.strip()
         username = update.message.from_user.username or update.message.from_user.first_name
@@ -164,7 +169,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             logging.error(f"Attempt {attempt + 1} failed to send audio file: {str(e)}")
                             if attempt == 2:  # Last attempt failed
                                 await update.message.reply_text(
-                                    "Error: Failed to send the audio file. Please try again later.")
+                                    "Error: Failed to send the audio file. Please try again later."
+                                )
 
                 await log_user_activity(username, youtube_link)
 
@@ -185,7 +191,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
-
     try:
         username = update.message.from_user.username or update.message.from_user.first_name
         logging.info(f"/start command initiated by {username}")
@@ -203,7 +208,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(welcome_message)
 
     except Exception as e:
-        logging.error(f"Error in /start command: {str(e)} | User: {username}")
+        logging.error(f"Error in /start command: {str(e)}")
         await update.message.reply_text(
             "❌ Oops! Something went wrong while processing your request. Please try again later."
         )
@@ -211,7 +216,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Main function to run the Telegram bot."""
-
     load_dotenv()
 
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -229,21 +233,12 @@ def main():
         application.add_handler(CommandHandler('start', start_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        logging.info("Command and message handlers added successfully.")
-
-        logging.info("Starting polling for updates...")
-
+        logging.info("Bot is polling for updates...")
         application.run_polling()
 
     except Exception as e:
-        logging.error(f"Error starting the bot: {str(e)}")
-        raise  # Optionally re-raise the exception to signal failure
+        logging.error(f"Error while running the bot: {str(e)}")
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)  # Set up logging before calling main
-
-    try:
-        main()
-    except Exception as e:
-        logging.critical(f"Bot crashed: {str(e)}")
+if __name__ == '__main__':
+    main()

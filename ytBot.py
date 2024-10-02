@@ -1,3 +1,5 @@
+import time
+
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
@@ -168,7 +170,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except Exception as e:
                             logging.error(f"Attempt {attempt + 1} failed to send audio file: {str(e)}")
                             if attempt == 2:  # Last attempt failed
-                                await update.message.reply_text(
+                               await update.message.reply_text(
+                                   time.sleep(5),
                                     "Error: Failed to send the audio file. Please try again later."
                                 )
 
@@ -196,19 +199,53 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.info(f"/start command initiated by {username}")
 
         welcome_message = (
-            "🎉 Welcome to the Audio Downloader Bot! 🎶\n"
-            "Simply send me a YouTube link, and I'll help you download the audio in no time!\n\n"
+            "🎉 Welcome to the Audio Downloader Bot! 🎶\n\n"
+            "Hey, {}! I'm here to make downloading audio from YouTube super easy for you.\n\n"
             "💡 Here’s how to get started:\n"
-            "1. Copy a YouTube link.\n"
-            "2. Paste it here.\n"
-            "3. Wait a moment for your audio file to be ready!\n\n"
-            "If you have any questions or need assistance, feel free to ask!"
-        )
+            "1. 📋 Copy a YouTube link.\n"
+            "2. 📥 Paste it here.\n"
+            "3. ⏳ Wait for a few seconds, and I'll provide the audio file for you to download!\n\n"
+            "🔹 __Supported Features__:\n"
+            "- Download audio from any public YouTube video.\n"
+            "- Fast and easy to use.\n\n"
+            "Feel free to explore and let me know if you need any help! 😊"
+        ).format(username)
 
         await update.message.reply_text(welcome_message)
 
     except Exception as e:
         logging.error(f"Error in /start command: {str(e)}")
+        await update.message.reply_text(
+            "❌ Oops! Something went wrong while processing your request. Please try again later."
+        )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /help command."""
+    try:
+        username = update.message.from_user.username or update.message.from_user.first_name or "there"
+        logging.info(f"/help command initiated by {username}")
+
+        help_message = (
+            "🆘 Help Section 🆘\n\n"
+            "Hello, {}! Need some assistance? No problem, I've got you covered! 😊\n\n"
+            "💡      --How to Use This Bot--:\n"
+            "1. Copy a YouTube link from your browser or app.\n"
+            "2. Paste it here in the chat.\n"
+            "3. Wait a moment, and I'll generate the audio file for you to download.\n\n"
+            "⚠️ **Note**:\n"
+            "- Only public YouTube videos are supported.\n"
+            "- Please be patient, as the processing time may vary depending on the video length.\n\n"
+            "🔗 Commands You Can Use:\n"
+            "- `/start` - Start interacting with the bot and see the welcome message, including basic usage instructions.\n"
+            "- `/help` - Get help on how to use the bot, including a list of available commands.\n\n"
+            "📞 Developer Contact:\n\n"
+            "If you have any questions, feedback, or suggestions, feel free to reach out to the developer: (https://www.linkedin.com/in/dinidu21/).\n\n"
+            "If you have any other questions, feel free to ask! I'm here to help you. 😊"
+        ).format(username)
+
+        await update.message.reply_text(help_message, disable_web_page_preview=True)
+    except Exception as e:
+        logging.error(f"Error in /help command: {str(e)}")
         await update.message.reply_text(
             "❌ Oops! Something went wrong while processing your request. Please try again later."
         )
@@ -226,11 +263,11 @@ def main():
 
     try:
         application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
         logging.info("Telegram bot application created successfully.")
 
         # Adding command and message handlers
         application.add_handler(CommandHandler('start', start_command))
+        application.add_handler(CommandHandler('help', help_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
         logging.info("Bot is polling for updates...")

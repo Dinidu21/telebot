@@ -166,14 +166,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 audio=await audio_file.read(),
                                 filename=os.path.basename(audio_file_path)
                             )
-                            break  # Break on successful send
+                            break
                         except Exception as e:
                             logging.error(f"Attempt {attempt + 1} failed to send audio file: {str(e)}")
-                            if attempt == 2:  # Last attempt failed
-                               await update.message.reply_text(
-                                   time.sleep(5),
-                                    "Error: Failed to send the audio file. Please try again later."
-                                )
 
                 await log_user_activity(username, youtube_link)
 
@@ -190,7 +185,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"An unexpected error occurred: {str(e)}")
         await update.message.reply_text("Error: An unexpected error occurred. Please try again later.")
-
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
@@ -249,7 +243,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Oops! Something went wrong while processing your request. Please try again later."
         )
-
 
 def main():
     """Main function to run the Telegram bot."""
